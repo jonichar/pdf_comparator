@@ -65,8 +65,14 @@
             <span style="font-size:13px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ label1 }}</span>
             <span v-if="pageCount1" style="font-size:11px;color:var(--text-muted);white-space:nowrap;">· {{ pageCount1 }} pág.</span>
           </div>
-          <div v-if="highlightedPages1.length" style="flex-shrink:0;font-size:11px;padding:2px 8px;border-radius:6px;background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3);margin-left:8px;">
-            {{ highlightedPages1.length }} pág. con cambios
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div v-if="highlightedPages1.length" style="flex-shrink:0;font-size:11px;padding:2px 8px;border-radius:6px;background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3);margin-left:8px;">
+              {{ highlightedPages1.length }} pág. con cambios
+            </div>
+            <button v-if="pageCount1" @click="downloadHighlightedPdf('left')" :disabled="exporting1" style="padding: 3px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); font-size: 10px; font-weight:600; cursor: pointer; transition: 0.2s; background: var(--bg-card); color: var(--text-muted); display:flex; align-items:center; gap:4px; margin-left: 4px;" onmouseover="this.style.borderColor='var(--border-color)';this.style.color='var(--text-primary)'" onmouseout="this.style.borderColor='rgba(255,255,255,0.1)';this.style.color='var(--text-muted)'">
+              <span v-if="exporting1">⏳ Generando...</span>
+              <span v-else>⬇️ Guardar PDF</span>
+            </button>
           </div>
         </div>
 
@@ -105,8 +111,14 @@
             <span style="font-size:13px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ label2 }}</span>
             <span v-if="pageCount2" style="font-size:11px;color:var(--text-muted);white-space:nowrap;">· {{ pageCount2 }} pág.</span>
           </div>
-          <div v-if="highlightedPages2.length" style="flex-shrink:0;font-size:11px;padding:2px 8px;border-radius:6px;background:rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(34,197,94,0.3);margin-left:8px;">
-            {{ highlightedPages2.length }} pág. con cambios
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div v-if="highlightedPages2.length" style="flex-shrink:0;font-size:11px;padding:2px 8px;border-radius:6px;background:rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(34,197,94,0.3);margin-left:8px;">
+              {{ highlightedPages2.length }} pág. con cambios
+            </div>
+            <button v-if="pageCount2" @click="downloadHighlightedPdf('right')" :disabled="exporting2" style="padding: 3px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); font-size: 10px; font-weight:600; cursor: pointer; transition: 0.2s; background: var(--bg-card); color: var(--text-muted); display:flex; align-items:center; gap:4px; margin-left: 4px;" onmouseover="this.style.borderColor='var(--border-color)';this.style.color='var(--text-primary)'" onmouseout="this.style.borderColor='rgba(255,255,255,0.1)';this.style.color='var(--text-muted)'">
+              <span v-if="exporting2">⏳ Generando...</span>
+              <span v-else>⬇️ Guardar PDF</span>
+            </button>
           </div>
         </div>
 
@@ -144,6 +156,7 @@ import { ref, watch, nextTick } from 'vue'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import DiffMatchPatch from 'diff-match-patch'
+import { PDFDocument, rgb } from 'pdf-lib'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
 
@@ -499,6 +512,8 @@ const loading1         = ref(false)
 const loading2         = ref(false)
 const highlightedPages1 = ref([])
 const highlightedPages2 = ref([])
+const exporting1       = ref(false)
+const exporting2       = ref(false)
 let _pdfDoc1 = null, _baseScale1 = 1
 let _pdfDoc2 = null, _baseScale2 = 1
 // Cached unique-word Sets — recomputed when highlights props change
@@ -574,6 +589,120 @@ async function loadPdf(file, side) {
   } finally {
     if (L) loading1.value = false
     else   loading2.value = false
+  }
+}
+
+// ── Native PDF Export ──────────────────────────────────────────────
+async function downloadHighlightedPdf(side) {
+  const isLeft = side === 'left'
+  const sourceFile = isLeft ? props.file1 : props.file2
+  const docObj = isLeft ? _pdfDoc1 : _pdfDoc2
+  if (!sourceFile || !docObj) return
+
+  try {
+    if (isLeft) exporting1.value = true
+    else exporting2.value = true
+
+    const ab = await sourceFile.arrayBuffer()
+    const pdfDocLib = await PDFDocument.load(ab)
+    const pagesLib = pdfDocLib.getPages()
+    
+    // PDF-lib origins are bottom-left.
+    const color = isLeft ? rgb(0.93, 0.26, 0.26) : rgb(0.13, 0.77, 0.36)
+
+    const count = docObj.numPages
+    for (let i = 0; i < count; i++) {
+      const pageNum = i + 1
+      const { wordStates1, wordStates2 } = await getPageHighlights(pageNum)
+      const wordStates = isLeft ? wordStates1 : wordStates2
+
+      // Skip pages with no highlights entirely
+      if (!wordStates || !wordStates.length || !wordStates.some(v => v)) continue
+
+      const libPage = pagesLib[i]
+      
+      const pdfjsPage = await docObj.getPage(pageNum)
+      const textContent = await pdfjsPage.getTextContent()
+      
+      const items = [...textContent.items]
+      items.sort((a, b) => b.transform[5] - a.transform[5])
+      
+      const lines = []
+      let currentLine = []
+      let lineBaseY = null
+      for (const item of items) {
+          const y = item.transform[5]
+          if (lineBaseY === null || Math.abs(lineBaseY - y) < 4) {
+              currentLine.push(item)
+              if (lineBaseY === null) lineBaseY = y
+          } else {
+              lines.push(currentLine)
+              currentLine = [item]
+              lineBaseY = y
+          }
+      }
+      if (currentLine.length) lines.push(currentLine)
+      lines.forEach(line => line.sort((a, b) => a.transform[4] - b.transform[4]))
+      const sortedItems = lines.flat()
+
+      let wordIndex = 0
+
+      for (const item of sortedItems) {
+        const raw = item.str
+        if (!raw) continue
+    
+        const words = tokenizeSequence(raw)
+        const len = words.length
+        if (len === 0) continue
+
+        let hasChange = false
+        for (let wId = 0; wId < len; wId++) {
+            if (wordIndex + wId < wordStates.length && wordStates[wordIndex + wId]) {
+                hasChange = true
+                break
+            }
+        }
+        wordIndex += len
+
+        if (!hasChange) continue
+
+        // Native PDF.js item coordinates mapping
+        const tx = item.transform
+        const x = tx[4]
+        const y = tx[5]
+        const h = Math.abs(tx[3]) || 12
+        const scaleX = Math.abs(tx[0] || 1)
+        const w = item.width * scaleX
+        
+        // Draw directly onto original PDF vectors preserving selection and formatting
+        libPage.drawRectangle({
+          x: x,
+          y: y - h * 0.2,
+          width: w,
+          height: h * 1.2,
+          color,
+          opacity: 0.25
+        })
+      }
+    }
+
+    const pdfBytes = await pdfDocLib.save()
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' })
+    const url = URL.createObjectURL(blob)
+    
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `Comparador_PDF_${isLeft ? 'Original' : 'Modificado'}_Marcado.pdf`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+
+  } catch(e) {
+    console.error("Export Error:", e)
+  } finally {
+    if (isLeft) exporting1.value = false
+    else exporting2.value = false
   }
 }
 
