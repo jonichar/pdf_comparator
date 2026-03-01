@@ -48,7 +48,24 @@
         </button>
       </div>
 
-      <span style="margin-left:auto;font-size:11px;color:#6b7280;display:flex;align-items:center;gap:4px;">
+      <!-- PDF Export: 2-step flow to keep user gesture fresh for Chrome security -->
+      <template v-if="pageCount1 && pageCount2">
+        <!-- Step 1: Generate -->
+        <button v-if="!readyPdfBlob" @click="generateCombinedPdf" :disabled="exporting"
+          style="margin-left:auto; padding: 4px 12px; border-radius: 6px; border: 1px solid #4ade80; background: rgba(34,197,94,0.15); color: #4ade80; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px;"
+          onmouseover="this.style.background='rgba(34,197,94,0.25)'" onmouseout="this.style.background='rgba(34,197,94,0.15)'">
+          <span v-if="exporting">⏳ Generando PDF...</span>
+          <span v-else>💾 Preparar PDF Combinado</span>
+        </button>
+        <!-- Step 2: Open in new tab (fresh user click) -->
+        <button v-else @click="triggerPdfDownload"
+          style="margin-left:auto; padding: 4px 12px; border-radius: 6px; border: 1px solid #3b82f6; background: rgba(59,130,246,0.2); color: #60a5fa; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px;"
+          onmouseover="this.style.background='rgba(59,130,246,0.35)'" onmouseout="this.style.background='rgba(59,130,246,0.2)'">
+          📄 Ver PDF (nueva pestaña)
+        </button>
+      </template>
+
+      <span style="margin-left:12px;font-size:11px;color:#6b7280;display:flex;align-items:center;gap:4px;">
         🔗 Scroll sincronizado
       </span>
     </div>
@@ -69,10 +86,6 @@
             <div v-if="highlightedPages1.length" style="flex-shrink:0;font-size:11px;padding:2px 8px;border-radius:6px;background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3);margin-left:8px;">
               {{ highlightedPages1.length }} pág. con cambios
             </div>
-            <button v-if="pageCount1" @click="downloadHighlightedPdf('left')" :disabled="exporting1" style="padding: 3px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); font-size: 10px; font-weight:600; cursor: pointer; transition: 0.2s; background: var(--bg-card); color: var(--text-muted); display:flex; align-items:center; gap:4px; margin-left: 4px;" onmouseover="this.style.borderColor='var(--border-color)';this.style.color='var(--text-primary)'" onmouseout="this.style.borderColor='rgba(255,255,255,0.1)';this.style.color='var(--text-muted)'">
-              <span v-if="exporting1">⏳ Generando...</span>
-              <span v-else>⬇️ Guardar PDF</span>
-            </button>
           </div>
         </div>
 
@@ -115,10 +128,6 @@
             <div v-if="highlightedPages2.length" style="flex-shrink:0;font-size:11px;padding:2px 8px;border-radius:6px;background:rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(34,197,94,0.3);margin-left:8px;">
               {{ highlightedPages2.length }} pág. con cambios
             </div>
-            <button v-if="pageCount2" @click="downloadHighlightedPdf('right')" :disabled="exporting2" style="padding: 3px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); font-size: 10px; font-weight:600; cursor: pointer; transition: 0.2s; background: var(--bg-card); color: var(--text-muted); display:flex; align-items:center; gap:4px; margin-left: 4px;" onmouseover="this.style.borderColor='var(--border-color)';this.style.color='var(--text-primary)'" onmouseout="this.style.borderColor='rgba(255,255,255,0.1)';this.style.color='var(--text-muted)'">
-              <span v-if="exporting2">⏳ Generando...</span>
-              <span v-else>⬇️ Guardar PDF</span>
-            </button>
           </div>
         </div>
 
@@ -512,8 +521,8 @@ const loading1         = ref(false)
 const loading2         = ref(false)
 const highlightedPages1 = ref([])
 const highlightedPages2 = ref([])
-const exporting1       = ref(false)
-const exporting2       = ref(false)
+const exporting         = ref(false)
+const readyPdfBlob      = ref(null)  // Stores the ready blob until user clicks "Save"
 let _pdfDoc1 = null, _baseScale1 = 1
 let _pdfDoc2 = null, _baseScale2 = 1
 // Cached unique-word Sets — recomputed when highlights props change
@@ -561,6 +570,12 @@ async function loadPdf(file, side) {
 
     emit('pages-loaded', { side, pageCount: count })
 
+    // Reset previously generated PDF when docs change
+    if (readyPdfBlob.value) {
+      URL.revokeObjectURL(URL.createObjectURL(readyPdfBlob.value))
+      readyPdfBlob.value = null
+    }
+
     // Wait for Vue to create all canvas elements
     await nextTick()
     await nextTick()
@@ -593,117 +608,159 @@ async function loadPdf(file, side) {
 }
 
 // ── Native PDF Export ──────────────────────────────────────────────
-async function downloadHighlightedPdf(side) {
+
+async function applyHighlightsToLibDoc(libDoc, pdfjsDoc, side) {
   const isLeft = side === 'left'
-  const sourceFile = isLeft ? props.file1 : props.file2
-  const docObj = isLeft ? _pdfDoc1 : _pdfDoc2
-  if (!sourceFile || !docObj) return
+  const pagesLib = libDoc.getPages()
+  const color = isLeft ? rgb(0.93, 0.26, 0.26) : rgb(0.13, 0.77, 0.36)
+  const count = pdfjsDoc.numPages
 
-  try {
-    if (isLeft) exporting1.value = true
-    else exporting2.value = true
+  for (let i = 0; i < count; i++) {
+    const pageNum = i + 1
+    const { wordStates1, wordStates2 } = await getPageHighlights(pageNum)
+    const wordStates = isLeft ? wordStates1 : wordStates2
 
-    const ab = await sourceFile.arrayBuffer()
-    const pdfDocLib = await PDFDocument.load(ab)
-    const pagesLib = pdfDocLib.getPages()
+    if (!wordStates || !wordStates.length || !wordStates.some(v => v)) continue
+
+    const libPage = pagesLib[i]
+    const pdfjsPage = await pdfjsDoc.getPage(pageNum)
+    const textContent = await pdfjsPage.getTextContent()
     
-    // PDF-lib origins are bottom-left.
-    const color = isLeft ? rgb(0.93, 0.26, 0.26) : rgb(0.13, 0.77, 0.36)
+    const items = [...textContent.items]
+    items.sort((a, b) => b.transform[5] - a.transform[5])
+    
+    const lines = []
+    let currentLine = []
+    let lineBaseY = null
+    for (const item of items) {
+        const y = item.transform[5]
+        if (lineBaseY === null || Math.abs(lineBaseY - y) < 4) {
+            currentLine.push(item)
+            if (lineBaseY === null) lineBaseY = y
+        } else {
+            lines.push(currentLine)
+            currentLine = [item]
+            lineBaseY = y
+        }
+    }
+    if (currentLine.length) lines.push(currentLine)
+    lines.forEach(line => line.sort((a, b) => a.transform[4] - b.transform[4]))
+    const sortedItems = lines.flat()
 
-    const count = docObj.numPages
-    for (let i = 0; i < count; i++) {
-      const pageNum = i + 1
-      const { wordStates1, wordStates2 } = await getPageHighlights(pageNum)
-      const wordStates = isLeft ? wordStates1 : wordStates2
+    let wordIndex = 0
 
-      // Skip pages with no highlights entirely
-      if (!wordStates || !wordStates.length || !wordStates.some(v => v)) continue
+    for (const item of sortedItems) {
+      const raw = item.str
+      if (!raw) continue
+  
+      const words = tokenizeSequence(raw)
+      const len = words.length
+      if (len === 0) continue
 
-      const libPage = pagesLib[i]
-      
-      const pdfjsPage = await docObj.getPage(pageNum)
-      const textContent = await pdfjsPage.getTextContent()
-      
-      const items = [...textContent.items]
-      items.sort((a, b) => b.transform[5] - a.transform[5])
-      
-      const lines = []
-      let currentLine = []
-      let lineBaseY = null
-      for (const item of items) {
-          const y = item.transform[5]
-          if (lineBaseY === null || Math.abs(lineBaseY - y) < 4) {
-              currentLine.push(item)
-              if (lineBaseY === null) lineBaseY = y
-          } else {
-              lines.push(currentLine)
-              currentLine = [item]
-              lineBaseY = y
+      let hasChange = false
+      for (let wId = 0; wId < len; wId++) {
+          if (wordIndex + wId < wordStates.length && wordStates[wordIndex + wId]) {
+              hasChange = true
+              break
           }
       }
-      if (currentLine.length) lines.push(currentLine)
-      lines.forEach(line => line.sort((a, b) => a.transform[4] - b.transform[4]))
-      const sortedItems = lines.flat()
+      wordIndex += len
 
-      let wordIndex = 0
+      if (!hasChange) continue
 
-      for (const item of sortedItems) {
-        const raw = item.str
-        if (!raw) continue
+      const tx = item.transform
+      const x = tx[4]
+      const y = tx[5]
+      const h = Math.abs(tx[3]) || 12
+      const scaleX = Math.abs(tx[0] || 1)
+      const w = item.width * scaleX
+      
+      libPage.drawRectangle({
+        x: x,
+        y: y - h * 0.2,
+        width: w,
+        height: h * 1.2,
+        color,
+        opacity: 0.25
+      })
+    }
+  }
+}
+
+async function generateCombinedPdf() {
+  if (!props.file1 || !props.file2 || !_pdfDoc1 || !_pdfDoc2) return
+
+  try {
+    exporting.value = true
+
+    // Load original arrays securely
+    const ab1 = await props.file1.arrayBuffer()
+    const ab2 = await props.file2.arrayBuffer()
     
-        const words = tokenizeSequence(raw)
-        const len = words.length
-        if (len === 0) continue
+    // Create doc instances mapped for PDF-lib editing
+    const doc1 = await PDFDocument.load(ab1)
+    const doc2 = await PDFDocument.load(ab2)
 
-        let hasChange = false
-        for (let wId = 0; wId < len; wId++) {
-            if (wordIndex + wId < wordStates.length && wordStates[wordIndex + wId]) {
-                hasChange = true
-                break
-            }
-        }
-        wordIndex += len
-
-        if (!hasChange) continue
-
-        // Native PDF.js item coordinates mapping
-        const tx = item.transform
-        const x = tx[4]
-        const y = tx[5]
-        const h = Math.abs(tx[3]) || 12
-        const scaleX = Math.abs(tx[0] || 1)
-        const w = item.width * scaleX
+    // Prepare unified, wide document
+    await applyHighlightsToLibDoc(doc1, _pdfDoc1, 'left')
+    await applyHighlightsToLibDoc(doc2, _pdfDoc2, 'right')
+    
+    const count = Math.max(_pdfDoc1.numPages, _pdfDoc2.numPages)
+    const finalMergedPdf = await PDFDocument.create()
+    
+    for (let i = 0; i < count; i++) {
+        const p1 = i < doc1.getPageCount() ? doc1.getPage(i) : null;
+        const p2 = i < doc2.getPageCount() ? doc2.getPage(i) : null;
         
-        // Draw directly onto original PDF vectors preserving selection and formatting
-        libPage.drawRectangle({
-          x: x,
-          y: y - h * 0.2,
-          width: w,
-          height: h * 1.2,
-          color,
-          opacity: 0.25
-        })
-      }
+        const w1 = p1 ? p1.getWidth() : 0;
+        const h1 = p1 ? p1.getHeight() : 0;
+        const w2 = p2 ? p2.getWidth() : 0;
+        const h2 = p2 ? p2.getHeight() : 0;
+
+        const mergedWidth = w1 + w2;
+        const mergedHeight = Math.max(h1, h2) || 842;
+        
+        let embedded1, embedded2;
+        if (p1) embedded1 = await finalMergedPdf.embedPage(p1)
+        if (p2) embedded2 = await finalMergedPdf.embedPage(p2)
+
+        const blankPage = finalMergedPdf.addPage([mergedWidth, mergedHeight])
+
+        if (embedded1) blankPage.drawPage(embedded1, { x: 0, y: mergedHeight - h1 })
+        if (embedded2) blankPage.drawPage(embedded2, { x: w1, y: mergedHeight - h2 })
+        
+        if (w1 > 0) {
+            blankPage.drawLine({
+              start: { x: w1, y: 0 },
+              end: { x: w1, y: mergedHeight },
+              thickness: 1,
+              color: rgb(0.8, 0.8, 0.8)
+            })
+        }
     }
 
-    const pdfBytes = await pdfDocLib.save()
-    const blob = new Blob([pdfBytes], { type: 'application/pdf' })
-    const url = URL.createObjectURL(blob)
+
+    const pdfBytes = await finalMergedPdf.save()
     
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `Comparador_PDF_${isLeft ? 'Original' : 'Modificado'}_Marcado.pdf`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    // Just store it. DO NOT trigger download here - Chrome would reject it
+    // because the user gesture has expired after all the async computation.
+    readyPdfBlob.value = new Blob([pdfBytes], { type: 'application/pdf' })
 
   } catch(e) {
     console.error("Export Error:", e)
   } finally {
-    if (isLeft) exporting1.value = false
-    else exporting2.value = false
+    exporting.value = false
   }
+}
+
+// Opens the prepared PDF in a new browser tab where the user can save it normally
+function triggerPdfDownload() {
+  if (!readyPdfBlob.value) return
+  const url = URL.createObjectURL(readyPdfBlob.value)
+  window.open(url, '_blank')
+  // Keep URL alive for 5 minutes so user has time to interact with the PDF viewer
+  setTimeout(() => URL.revokeObjectURL(url), 300000)
+  readyPdfBlob.value = null
 }
 
 async function rerenderAll() {
