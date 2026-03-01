@@ -377,7 +377,8 @@ async function runComparison() {
   }
 }
 
-// ── Initial Test Preload (Enabled for testing) ──────────────────
+// ── Initial Test Preload (Disabled for production) ──────────────────
+/*
 onMounted(async () => {
   try {
     message.loading({ content: 'Precargando PDFs de prueba...', key: 'preload' })
@@ -412,6 +413,7 @@ onMounted(async () => {
     message.error({ content: 'Fallo al precargar los PDFs', key: 'preload' })
   }
 })
+*/
 
 // ── Step navigation ────────────────────────────────────────────────
 const activeStep = ref(1)
