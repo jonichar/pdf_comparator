@@ -473,7 +473,13 @@ async function setupPageDimensions(pdfDoc, num, side, baseScale) {
   canvas.dataset.num = num
   canvas.dataset.rendered = ''
 
-  const page     = await pdfDoc.getPage(num)
+  let page
+  try {
+    page = await pdfDoc.getPage(num)
+  } catch(e) {
+    console.warn(`[Viewer] setupPageDimensions: skipping page ${num}: ${e.message}`)
+    return
+  }
   const scale    = baseScale * QUALITY_SCALE
   const viewport = page.getViewport({ scale })
 
@@ -493,7 +499,13 @@ async function setupPageDimensions(pdfDoc, num, side, baseScale) {
 }
 
 async function renderPageContext(canvas, pdfDoc, num, side, baseScale) {
-  const page     = await pdfDoc.getPage(num)
+  let page
+  try {
+    page = await pdfDoc.getPage(num)
+  } catch(e) {
+    console.warn(`[Viewer] renderPageContext: skipping page ${num}: ${e.message}`)
+    return
+  }
   const scale    = baseScale * QUALITY_SCALE
   const viewport = page.getViewport({ scale })
 
@@ -613,7 +625,8 @@ async function applyHighlightsToLibDoc(libDoc, pdfjsDoc, side) {
   const isLeft = side === 'left'
   const pagesLib = libDoc.getPages()
   const color = isLeft ? rgb(0.93, 0.26, 0.26) : rgb(0.13, 0.77, 0.36)
-  const count = pdfjsDoc.numPages
+  // Use the minimum page count — we can only draw on pages that exist in BOTH references
+  const count = Math.min(pdfjsDoc.numPages, pagesLib.length)
 
   for (let i = 0; i < count; i++) {
     const pageNum = i + 1
@@ -623,7 +636,15 @@ async function applyHighlightsToLibDoc(libDoc, pdfjsDoc, side) {
     if (!wordStates || !wordStates.length || !wordStates.some(v => v)) continue
 
     const libPage = pagesLib[i]
-    const pdfjsPage = await pdfjsDoc.getPage(pageNum)
+    if (!libPage) continue  // Guard: skip if page is missing in pdf-lib doc
+
+    let pdfjsPage
+    try {
+      pdfjsPage = await pdfjsDoc.getPage(pageNum)
+    } catch(e) {
+      console.warn(`[Export] Skipping page ${pageNum}: ${e.message}`)
+      continue
+    }
     const textContent = await pdfjsPage.getTextContent()
     
     const items = [...textContent.items]

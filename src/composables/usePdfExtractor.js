@@ -17,7 +17,7 @@ export function usePdfExtractor() {
     /**
      * Extract text from a PDF File object
      * @param {File} file - PDF File object
-     * @returns {Promise<{ pages: string[], fullText: string, pageCount: number }>}
+     * @returns {Promise<{ pages: string[], fullText: string, pageCount: number, skippedPages: number[] }>}
      */
     async function extractText(file) {
         isLoading.value = true
@@ -29,9 +29,19 @@ export function usePdfExtractor() {
             const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
             const pageCount = pdf.numPages
             const pages = []
+            const skippedPages = []  // 1-indexed page numbers that couldn't be loaded
 
             for (let i = 1; i <= pageCount; i++) {
-                const page = await pdf.getPage(i)
+                let page
+                try {
+                    page = await pdf.getPage(i)
+                } catch (pageErr) {
+                    console.warn(`[Extractor] Skipping page ${i} (getPage failed): ${pageErr.message}`)
+                    pages.push('')  // Push empty string so page indices stay aligned
+                    progress.value = Math.round((i / pageCount) * 100)
+                    continue
+                }
+
                 const textContent = await page.getTextContent()
                 const items = [...textContent.items]
 
@@ -77,7 +87,8 @@ export function usePdfExtractor() {
             return {
                 pages,
                 fullText: pages.join('\n\n--- Page Break ---\n\n'),
-                pageCount
+                pageCount,
+                skippedPages
             }
         } catch (err) {
             error.value = `Error al procesar el PDF: ${err.message}`

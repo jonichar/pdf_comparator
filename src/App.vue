@@ -149,6 +149,25 @@
           </div>
         </div>
 
+        <!-- Skipped pages warning -->
+        <div v-if="skippedPages1.length || skippedPages2.length"
+          style="margin-bottom: 16px; border-radius: 12px; padding: 14px 18px; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.3);">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+            <span style="font-size: 18px;">⚠️</span>
+            <p style="font-size: 13px; font-weight: 600; color: #f87171;">Páginas con problemas de lectura</p>
+          </div>
+          <p style="font-size: 12px; color: var(--text-muted); line-height: 1.7;">
+            Algunas páginas tienen una estructura interna inválida y no pudieron ser procesadas por PDF.js.
+            Su contenido <strong style="color: var(--text-primary);">no se incluye en el análisis de diferencias</strong>.
+          </p>
+          <div v-if="skippedPages1.length" style="margin-top: 8px; font-size: 12px; color: #fca5a5;">
+            📋 <strong>Original:</strong> páginas omitidas → {{ skippedPages1.join(', ') }}
+          </div>
+          <div v-if="skippedPages2.length" style="margin-top: 4px; font-size: 12px; color: #fca5a5;">
+            📋 <strong>Modificado:</strong> páginas omitidas → {{ skippedPages2.join(', ') }}
+          </div>
+        </div>
+
         <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 14px;">
           <div style="border-radius: 14px; padding: 18px 12px; text-align: center; background-color: var(--bg-card); border: 1px solid var(--border-color);">
             <p style="font-size: 28px; font-weight: 700; color: var(--accent-blue);">{{ similarityPercent }}%</p>
@@ -312,6 +331,8 @@ const pdf1Pages    = ref(0)
 const pdf2Pages    = ref(0)
 const pdf1PageTexts = ref([])   // per-page text arrays for page-level diff
 const pdf2PageTexts = ref([])
+const skippedPages1 = ref([])   // pages that pdfjs couldn't load
+const skippedPages2 = ref([])
 
 async function onPdf1Selected(file) {
   pdf1File.value = file
@@ -319,7 +340,14 @@ async function onPdf1Selected(file) {
   if (result) {
     pdf1Text.value      = result.fullText
     pdf1Pages.value     = result.pageCount
-    pdf1PageTexts.value = result.pages    // array of per-page strings
+    pdf1PageTexts.value = result.pages
+    skippedPages1.value = result.skippedPages || []
+    if (skippedPages1.value.length > 0) {
+      message.warning({
+        content: `Documento Original: ${skippedPages1.value.length} página(s) no pudieron leerse (pág. ${skippedPages1.value.join(', ')}) y se omitirán del análisis.`,
+        duration: 8
+      })
+    }
   }
 }
 async function onPdf2Selected(file) {
@@ -329,6 +357,13 @@ async function onPdf2Selected(file) {
     pdf2Text.value      = result.fullText
     pdf2Pages.value     = result.pageCount
     pdf2PageTexts.value = result.pages
+    skippedPages2.value = result.skippedPages || []
+    if (skippedPages2.value.length > 0) {
+      message.warning({
+        content: `Documento Modificado: ${skippedPages2.value.length} página(s) no pudieron leerse (pág. ${skippedPages2.value.join(', ')}) y se omitirán del análisis.`,
+        duration: 8
+      })
+    }
   }
 }
 function onPdf1Cleared() {
@@ -383,9 +418,8 @@ onMounted(async () => {
   try {
     message.loading({ content: 'Precargando PDFs de prueba...', key: 'preload' })
     
-    // Fetch test files as blobs via the public path exposed by vite-plugin-static-copy
-    const v09Url = '/test-pdfs/400004768 VITAMINA D3 50000 UI CBG  (V09)  ok.pdf'
-    const v10Url = '/test-pdfs/400004768 VITAMINA D3 50000 UI CBG  (V10) ok.pdf'
+    const v09Url = '/test-pdfs/400006952 PROPUESTO.pdf'
+    const v10Url = '/test-pdfs/400006953 PROPUESTO.pdf'
 
     const [res1, res2] = await Promise.all([ fetch(v09Url), fetch(v10Url) ])
     
@@ -394,20 +428,16 @@ onMounted(async () => {
     const blob1 = await res1.blob()
     const blob2 = await res2.blob()
     
-    // Convert Blobs to File objects for the extractors
-    const file1 = new File([blob1], 'Documento_V09.pdf', { type: 'application/pdf' })
-    const file2 = new File([blob2], 'Documento_V10.pdf', { type: 'application/pdf' })
+    const file1 = new File([blob1], '400006952_PROPUESTO.pdf', { type: 'application/pdf' })
+    const file2 = new File([blob2], '400006953_PROPUESTO.pdf', { type: 'application/pdf' })
     
-    // Auto-extract
     await Promise.all([ onPdf1Selected(file1), onPdf2Selected(file2) ])
     
     message.success({ content: 'PDFs precargados exitosamente', key: 'preload', duration: 2 })
     
-    // Auto run comparison
     await runComparison()
 
-    // Automatically navigate to Step 4 (Visor PDF)
-    activeStep.value = 4
+    activeStep.value = 3
   } catch(e) {
     console.error('Preload failed:', e)
     message.error({ content: 'Fallo al precargar los PDFs', key: 'preload' })
