@@ -721,70 +721,79 @@ async function generateCombinedPdf() {
   exportError.value = false
 
   try {
-    // Load original arrays securely
-    const ab1 = await props.file1.arrayBuffer()
-    const ab2 = await props.file2.arrayBuffer()
-    
-    // Create doc instances mapped for PDF-lib editing.
-    // ignoreEncryption: true allows loading password-protected PDFs without throwing.
-    let doc1, doc2
-    try {
-      doc1 = await PDFDocument.load(ab1, { ignoreEncryption: true })
-    } catch(e) {
-      message.error({ content: `No se pudo cargar el Documento Original para exportar: ${e.message}`, duration: 7 })
-      exportError.value = true
-      return
-    }
-    try {
-      doc2 = await PDFDocument.load(ab2, { ignoreEncryption: true })
-    } catch(e) {
-      message.error({ content: `No se pudo cargar el Documento Modificado para exportar: ${e.message}`, duration: 7 })
-      exportError.value = true
-      return
-    }
-
-    // Prepare unified, wide document
-    await applyHighlightsToLibDoc(doc1, _pdfDoc1, 'left')
-    await applyHighlightsToLibDoc(doc2, _pdfDoc2, 'right')
-    
+    // ── Canvas → PNG strategy ───────────────────────────────────────
+    // pdf-lib's embedPage() internally decompresses PDF streams, which crashes
+    // on PDFs using non-standard flate compression (error: "Unknown compression
+    // method in flate stream: 191, 161"). The fix: use pdf.js (already in the
+    // project) to render each page to an offscreen canvas and embed it as PNG.
+    // This completely bypasses pdf-lib's stream decompression.
+    const EXPORT_SCALE = 1.5  // balance between quality and file size
     const count = Math.max(_pdfDoc1.numPages, _pdfDoc2.numPages)
     const finalMergedPdf = await PDFDocument.create()
-    
+
     for (let i = 0; i < count; i++) {
-        const p1 = i < doc1.getPageCount() ? doc1.getPage(i) : null;
-        const p2 = i < doc2.getPageCount() ? doc2.getPage(i) : null;
-        
-        const w1 = p1 ? p1.getWidth() : 0;
-        const h1 = p1 ? p1.getHeight() : 0;
-        const w2 = p2 ? p2.getWidth() : 0;
-        const h2 = p2 ? p2.getHeight() : 0;
+      // ── Render doc1 page via pdf.js → canvas → PNG ───────────────
+      let embedded1 = null, w1 = 0, h1 = 0
+      if (i < _pdfDoc1.numPages) {
+        const pdfjsPage1 = await _pdfDoc1.getPage(i + 1)
+        const vp1 = pdfjsPage1.getViewport({ scale: EXPORT_SCALE })
+        w1 = vp1.width; h1 = vp1.height
 
-        const mergedWidth = w1 + w2;
-        const mergedHeight = Math.max(h1, h2) || 842;
-        
-        let embedded1, embedded2;
-        if (p1) embedded1 = await finalMergedPdf.embedPage(p1)
-        if (p2) embedded2 = await finalMergedPdf.embedPage(p2)
+        const offCanvas1 = document.createElement('canvas')
+        offCanvas1.width = Math.round(w1); offCanvas1.height = Math.round(h1)
+        const ctx1 = offCanvas1.getContext('2d')
+        await pdfjsPage1.render({ canvasContext: ctx1, viewport: vp1 }).promise
 
-        const blankPage = finalMergedPdf.addPage([mergedWidth, mergedHeight])
+        const { wordStates1 } = getPageHighlights(i + 1)
+        await drawHighlights(ctx1, pdfjsPage1, vp1, wordStates1, '#ef4444')
 
-        if (embedded1) blankPage.drawPage(embedded1, { x: 0, y: mergedHeight - h1 })
-        if (embedded2) blankPage.drawPage(embedded2, { x: w1, y: mergedHeight - h2 })
-        
-        if (w1 > 0) {
-            blankPage.drawLine({
-              start: { x: w1, y: 0 },
-              end: { x: w1, y: mergedHeight },
-              thickness: 1,
-              color: rgb(0.8, 0.8, 0.8)
-            })
-        }
+        const blob1 = await new Promise(res => offCanvas1.toBlob(res, 'image/png'))
+        const imgBytes1 = await blob1.arrayBuffer()
+        embedded1 = await finalMergedPdf.embedPng(imgBytes1)
+      }
+
+      // ── Render doc2 page via pdf.js → canvas → PNG ───────────────
+      let embedded2 = null, w2 = 0, h2 = 0
+      if (i < _pdfDoc2.numPages) {
+        const pdfjsPage2 = await _pdfDoc2.getPage(i + 1)
+        const vp2 = pdfjsPage2.getViewport({ scale: EXPORT_SCALE })
+        w2 = vp2.width; h2 = vp2.height
+
+        const offCanvas2 = document.createElement('canvas')
+        offCanvas2.width = Math.round(w2); offCanvas2.height = Math.round(h2)
+        const ctx2 = offCanvas2.getContext('2d')
+        await pdfjsPage2.render({ canvasContext: ctx2, viewport: vp2 }).promise
+
+        const { wordStates2 } = getPageHighlights(i + 1)
+        await drawHighlights(ctx2, pdfjsPage2, vp2, wordStates2, '#22c55e')
+
+        const blob2 = await new Promise(res => offCanvas2.toBlob(res, 'image/png'))
+        const imgBytes2 = await blob2.arrayBuffer()
+        embedded2 = await finalMergedPdf.embedPng(imgBytes2)
+      }
+
+      // ── Compose side-by-side page ─────────────────────────────────
+      const mergedWidth  = w1 + w2
+      const mergedHeight = Math.max(h1, h2) || 842
+
+      const blankPage = finalMergedPdf.addPage([mergedWidth, mergedHeight])
+
+      if (embedded1) blankPage.drawImage(embedded1, { x: 0,  y: mergedHeight - h1, width: w1, height: h1 })
+      if (embedded2) blankPage.drawImage(embedded2, { x: w1, y: mergedHeight - h2, width: w2, height: h2 })
+
+      if (w1 > 0 && w2 > 0) {
+        blankPage.drawLine({
+          start: { x: w1, y: 0 },
+          end:   { x: w1, y: mergedHeight },
+          thickness: 1.5,
+          color: rgb(0.6, 0.6, 0.6)
+        })
+      }
     }
 
     const pdfBytes = await finalMergedPdf.save()
-    
-    // Just store it. DO NOT trigger download here — Chrome would reject it
-    // because the user gesture has expired after all the async computation.
+
+    // Store blob — do NOT trigger download here, Chrome blocks it after async work
     readyPdfBlob.value = new Blob([pdfBytes], { type: 'application/pdf' })
     message.success({ content: '¡PDF combinado listo! Haz clic en "Ver PDF" para abrirlo.', duration: 4 })
 

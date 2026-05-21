@@ -446,30 +446,30 @@ async function runComparison() {
 onMounted(async () => {
   try {
     message.loading({ content: 'Precargando PDFs de prueba...', key: 'preload' })
-    
-    const v09Url = '/test-pdfs/400006952 PROPUESTO.pdf'
-    const v10Url = '/test-pdfs/400006953 PROPUESTO.pdf'
+
+    const v09Url = '/test-pdfs/doc1.pdf'
+    const v10Url = '/test-pdfs/doc2.pdf'
 
     const [res1, res2] = await Promise.all([ fetch(v09Url), fetch(v10Url) ])
-    
-    if (!res1.ok || !res2.ok) throw new Error("Could not find test pdfs in public directory.")
+
+    if (!res1.ok || !res2.ok) throw new Error('No se encontraron los PDFs de prueba en /public/test-pdfs/')
 
     const blob1 = await res1.blob()
     const blob2 = await res2.blob()
-    
-    const file1 = new File([blob1], '400006952_PROPUESTO.pdf', { type: 'application/pdf' })
-    const file2 = new File([blob2], '400006953_PROPUESTO.pdf', { type: 'application/pdf' })
-    
+
+    const file1 = new File([blob1], 'VALSARTAN_doc1.pdf', { type: 'application/pdf' })
+    const file2 = new File([blob2], 'VALSARTAN_doc2.pdf', { type: 'application/pdf' })
+
     await Promise.all([ onPdf1Selected(file1), onPdf2Selected(file2) ])
-    
+
     message.success({ content: 'PDFs precargados exitosamente', key: 'preload', duration: 2 })
-    
+
     await runComparison()
 
-    activeStep.value = 3
+    activeStep.value = 4
   } catch(e) {
     console.error('Preload failed:', e)
-    message.error({ content: 'Fallo al precargar los PDFs', key: 'preload' })
+    message.error({ content: 'Fallo al precargar los PDFs: ' + e.message, key: 'preload' })
   }
 })
 */
