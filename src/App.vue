@@ -51,18 +51,25 @@
 
         <!-- Right side: Compare button in nav when on step 1 -->
         <div style="flex: 1;"></div>
-        <button
+        <a-tooltip
           v-if="activeStep === 1"
-          @click="runComparison"
-          :disabled="!canCompare || isComparing"
-          style="display: flex; align-items: center; gap: 6px; padding: 6px 18px; border-radius: 8px; border: none; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s;"
-          :style="canCompare && !isComparing
-            ? 'background: linear-gradient(135deg, #4f8ef7, #7c5cbf); color: white; box-shadow: 0 2px 12px rgba(79,142,247,0.3);'
-            : 'background: rgba(79,142,247,0.1); color: #4b5563; cursor: not-allowed;'"
+          :title="(!canCompare || isComparing) ? compareDisabledReason : ''"
+          placement="bottomRight"
+          color="#1a1f35"
+          :overlayInnerStyle="{ border: '1px solid rgba(239,68,68,0.4)', color: '#f87171', fontSize: '12px', maxWidth: '280px' }"
         >
-          <span>🔍</span>
-          {{ isComparing ? 'Analizando...' : 'Comparar' }}
-        </button>
+          <button
+            @click="runComparison"
+            :disabled="!canCompare || isComparing"
+            style="display: flex; align-items: center; gap: 6px; padding: 6px 18px; border-radius: 8px; border: none; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s;"
+            :style="canCompare && !isComparing
+              ? 'background: linear-gradient(135deg, #4f8ef7, #7c5cbf); color: white; box-shadow: 0 2px 12px rgba(79,142,247,0.3);'
+              : 'background: rgba(79,142,247,0.1); color: #4b5563; cursor: not-allowed;'"
+          >
+            <span>🔍</span>
+            {{ isComparing ? 'Analizando...' : 'Comparar' }}
+          </button>
+        </a-tooltip>
       </div>
     </nav>
 
@@ -108,15 +115,24 @@
           </a-button>
         </div>
         <div v-else style="display: flex; justify-content: center; margin-top: 40px; padding-top: 32px; border-top: 1px solid var(--border-color);">
-          <a-button type="primary" size="large"
-            :disabled="!canCompare || isComparing"
-            :loading="isComparing"
-            style="height: 48px; padding: 0 48px; font-size: 15px; font-weight: 600; border-radius: 12px; background: linear-gradient(135deg, #4f8ef7, #7c5cbf); border: none; box-shadow: 0 4px 24px rgba(79,142,247,0.3);"
-            @click="runComparison"
+          <a-tooltip
+            :title="(!canCompare || isComparing) ? compareDisabledReason : ''"
+            placement="top"
+            color="#1a1f35"
+            :overlayInnerStyle="{ border: '1px solid rgba(239,68,68,0.4)', color: '#f87171', fontSize: '13px', maxWidth: '340px', padding: '10px 14px' }"
           >
-            <template #icon><span style="margin-right:6px;">🔍</span></template>
-            {{ isComparing ? 'Analizando...' : 'Comparar documentos' }}
-          </a-button>
+            <span style="display: inline-block;">
+              <a-button type="primary" size="large"
+                :disabled="!canCompare || isComparing"
+                :loading="isComparing"
+                style="height: 48px; padding: 0 48px; font-size: 15px; font-weight: 600; border-radius: 12px; background: linear-gradient(135deg, #4f8ef7, #7c5cbf); border: none; box-shadow: 0 4px 24px rgba(79,142,247,0.3);"
+                @click="runComparison"
+              >
+                <template #icon><span style="margin-right:6px;">🔍</span></template>
+                {{ isComparing ? 'Analizando...' : 'Comparar documentos' }}
+              </a-button>
+            </span>
+          </a-tooltip>
         </div>
 
         <!-- Empty state (no files yet) -->
@@ -382,6 +398,19 @@ const insertedTexts = ref([])
 const diffDone      = ref(false)
 const isComparing   = ref(false)
 const canCompare    = computed(() => pdf1Text.value && pdf2Text.value)
+
+// Tooltip reason explaining why the compare button is disabled
+const compareDisabledReason = computed(() => {
+  if (!pdf1File.value && !pdf2File.value) return 'Carga los dos documentos PDF para poder comparar'
+  if (!pdf1File.value) return 'Falta cargar el Documento Original'
+  if (!pdf2File.value) return 'Falta cargar el Documento Modificado'
+  if (pdf1Loading.value || pdf2Loading.value) return 'Esperando a que terminen de procesarse los documentos...'
+  if (pdf1Error.value) return `Error en Documento Original: ${pdf1Error.value}`
+  if (pdf2Error.value) return `Error en Documento Modificado: ${pdf2Error.value}`
+  if (pdf1File.value && !pdf1Text.value) return 'El Documento Original no contiene texto extraíble (puede ser un PDF escaneado o de solo imágenes)'
+  if (pdf2File.value && !pdf2Text.value) return 'El Documento Modificado no contiene texto extraíble (puede ser un PDF escaneado o de solo imágenes)'
+  return ''
+})
 
 const pdfViewerRef = ref(null)
 
