@@ -51,10 +51,16 @@
       <!-- PDF Export: 2-step flow to keep user gesture fresh for Chrome security -->
       <template v-if="pageCount1 && pageCount2">
         <!-- Step 1: Generate -->
-        <button v-if="!readyPdfBlob" @click="generateCombinedPdf" :disabled="exporting"
-          style="margin-left:auto; padding: 4px 12px; border-radius: 6px; border: 1px solid #4ade80; background: rgba(34,197,94,0.15); color: #4ade80; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px;"
-          onmouseover="this.style.background='rgba(34,197,94,0.25)'" onmouseout="this.style.background='rgba(34,197,94,0.15)'">
+        <button v-if="!readyPdfBlob" @click="exportError ? (exportError = false) : generateCombinedPdf()" :disabled="exporting"
+          style="margin-left:auto; padding: 4px 12px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.2s;"
+          :style="exportError
+            ? 'border: 1px solid #f87171; background: rgba(239,68,68,0.15); color: #f87171;'
+            : exporting
+              ? 'border: 1px solid #4ade80; background: rgba(34,197,94,0.08); color: #4ade80; opacity: 0.7; cursor: not-allowed;'
+              : 'border: 1px solid #4ade80; background: rgba(34,197,94,0.15); color: #4ade80;'"
+        >
           <span v-if="exporting">⏳ Generando PDF...</span>
+          <span v-else-if="exportError">❌ Error — Reintentar</span>
           <span v-else>💾 Preparar PDF Combinado</span>
         </button>
         <!-- Step 2: Open in new tab (fresh user click) -->
@@ -162,6 +168,7 @@
 
 <script setup>
 import { ref, watch, nextTick } from 'vue'
+import { message } from 'ant-design-vue'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import DiffMatchPatch from 'diff-match-patch'
@@ -534,6 +541,7 @@ const loading2         = ref(false)
 const highlightedPages1 = ref([])
 const highlightedPages2 = ref([])
 const exporting         = ref(false)
+const exportError       = ref(false)  // True when PDF generation failed
 const readyPdfBlob      = ref(null)  // Stores the ready blob until user clicks "Save"
 let _pdfDoc1 = null, _baseScale1 = 1
 let _pdfDoc2 = null, _baseScale2 = 1
@@ -583,10 +591,8 @@ async function loadPdf(file, side) {
     emit('pages-loaded', { side, pageCount: count })
 
     // Reset previously generated PDF when docs change
-    if (readyPdfBlob.value) {
-      URL.revokeObjectURL(URL.createObjectURL(readyPdfBlob.value))
-      readyPdfBlob.value = null
-    }
+    readyPdfBlob.value = null
+    exportError.value = false
 
     // Wait for Vue to create all canvas elements
     await nextTick()
@@ -711,16 +717,31 @@ async function applyHighlightsToLibDoc(libDoc, pdfjsDoc, side) {
 async function generateCombinedPdf() {
   if (!props.file1 || !props.file2 || !_pdfDoc1 || !_pdfDoc2) return
 
-  try {
-    exporting.value = true
+  exporting.value = true
+  exportError.value = false
 
+  try {
     // Load original arrays securely
     const ab1 = await props.file1.arrayBuffer()
     const ab2 = await props.file2.arrayBuffer()
     
-    // Create doc instances mapped for PDF-lib editing
-    const doc1 = await PDFDocument.load(ab1)
-    const doc2 = await PDFDocument.load(ab2)
+    // Create doc instances mapped for PDF-lib editing.
+    // ignoreEncryption: true allows loading password-protected PDFs without throwing.
+    let doc1, doc2
+    try {
+      doc1 = await PDFDocument.load(ab1, { ignoreEncryption: true })
+    } catch(e) {
+      message.error({ content: `No se pudo cargar el Documento Original para exportar: ${e.message}`, duration: 7 })
+      exportError.value = true
+      return
+    }
+    try {
+      doc2 = await PDFDocument.load(ab2, { ignoreEncryption: true })
+    } catch(e) {
+      message.error({ content: `No se pudo cargar el Documento Modificado para exportar: ${e.message}`, duration: 7 })
+      exportError.value = true
+      return
+    }
 
     // Prepare unified, wide document
     await applyHighlightsToLibDoc(doc1, _pdfDoc1, 'left')
@@ -760,15 +781,17 @@ async function generateCombinedPdf() {
         }
     }
 
-
     const pdfBytes = await finalMergedPdf.save()
     
-    // Just store it. DO NOT trigger download here - Chrome would reject it
+    // Just store it. DO NOT trigger download here — Chrome would reject it
     // because the user gesture has expired after all the async computation.
     readyPdfBlob.value = new Blob([pdfBytes], { type: 'application/pdf' })
+    message.success({ content: '¡PDF combinado listo! Haz clic en "Ver PDF" para abrirlo.', duration: 4 })
 
   } catch(e) {
-    console.error("Export Error:", e)
+    console.error('Export Error:', e)
+    exportError.value = true
+    message.error({ content: `Error al generar el PDF: ${e.message}`, duration: 7 })
   } finally {
     exporting.value = false
   }
