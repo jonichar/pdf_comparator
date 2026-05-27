@@ -720,54 +720,84 @@ async function generateCombinedPdf() {
   exporting.value = true
   exportError.value = false
 
+  // Load fresh independent pdf.js instances for export.
+  // Reusing _pdfDoc1/_pdfDoc2 causes "Invalid page request" because those
+  // documents are actively used by the viewer's IntersectionObserver renders —
+  // concurrent render tasks on the same document conflict in pdf.js worker.
+  let exportDoc1 = null, exportDoc2 = null
   try {
-    // ── Canvas → PNG strategy ───────────────────────────────────────
-    // pdf-lib's embedPage() internally decompresses PDF streams, which crashes
-    // on PDFs using non-standard flate compression (error: "Unknown compression
-    // method in flate stream: 191, 161"). The fix: use pdf.js (already in the
-    // project) to render each page to an offscreen canvas and embed it as PNG.
-    // This completely bypasses pdf-lib's stream decompression.
-    const EXPORT_SCALE = 1.5  // balance between quality and file size
-    const count = Math.max(_pdfDoc1.numPages, _pdfDoc2.numPages)
+    const [ab1, ab2] = await Promise.all([
+      props.file1.arrayBuffer(),
+      props.file2.arrayBuffer()
+    ])
+    ;[exportDoc1, exportDoc2] = await Promise.all([
+      pdfjsLib.getDocument({ data: ab1 }).promise,
+      pdfjsLib.getDocument({ data: ab2 }).promise
+    ])
+  } catch(e) {
+    exporting.value = false
+    exportError.value = true
+    message.error({ content: `Error al cargar los PDFs para exportar: ${e.message}`, duration: 7 })
+    return
+  }
+
+  try {
+    // ── Canvas → PNG strategy ─────────────────────────────────────────
+    // Uses fresh pdf.js document instances (above) to render each page to an
+    // offscreen canvas, then embeds as PNG via pdf-lib. This avoids:
+    //   1) "Unknown compression method in flate stream" (pdf-lib embedPage bug)
+    //   2) "Invalid page request" (concurrent render on shared pdf.js document)
+    const EXPORT_SCALE = 1.5
+    const count = Math.max(exportDoc1.numPages, exportDoc2.numPages)
     const finalMergedPdf = await PDFDocument.create()
 
     for (let i = 0; i < count; i++) {
-      // ── Render doc1 page via pdf.js → canvas → PNG ───────────────
+      // ── Render doc1 page ──────────────────────────────────────────
       let embedded1 = null, w1 = 0, h1 = 0
-      if (i < _pdfDoc1.numPages) {
-        const pdfjsPage1 = await _pdfDoc1.getPage(i + 1)
-        const vp1 = pdfjsPage1.getViewport({ scale: EXPORT_SCALE })
+      if (i < exportDoc1.numPages) {
+        const page1 = await exportDoc1.getPage(i + 1)
+        const vp1   = page1.getViewport({ scale: EXPORT_SCALE })
         w1 = vp1.width; h1 = vp1.height
 
-        const offCanvas1 = document.createElement('canvas')
-        offCanvas1.width = Math.round(w1); offCanvas1.height = Math.round(h1)
-        const ctx1 = offCanvas1.getContext('2d')
-        await pdfjsPage1.render({ canvasContext: ctx1, viewport: vp1 }).promise
+        const c1 = document.createElement('canvas')
+        c1.width  = Math.max(1, Math.round(w1))
+        c1.height = Math.max(1, Math.round(h1))
+        const ctx1 = c1.getContext('2d')
+        await page1.render({ canvasContext: ctx1, viewport: vp1 }).promise
 
+        // Apply same highlights as the viewer (wordStates from cached diff)
         const { wordStates1 } = getPageHighlights(i + 1)
-        await drawHighlights(ctx1, pdfjsPage1, vp1, wordStates1, '#ef4444')
+        // Use the viewer's _pdfDoc1 only for text content (read-only, safe)
+        if (wordStates1?.length) {
+          const viewerPage1 = await _pdfDoc1.getPage(i + 1)
+          await drawHighlights(ctx1, viewerPage1, vp1, wordStates1, '#ef4444')
+        }
 
-        const blob1 = await new Promise(res => offCanvas1.toBlob(res, 'image/png'))
+        const blob1     = await new Promise(res => c1.toBlob(res, 'image/png'))
         const imgBytes1 = await blob1.arrayBuffer()
         embedded1 = await finalMergedPdf.embedPng(imgBytes1)
       }
 
-      // ── Render doc2 page via pdf.js → canvas → PNG ───────────────
+      // ── Render doc2 page ──────────────────────────────────────────
       let embedded2 = null, w2 = 0, h2 = 0
-      if (i < _pdfDoc2.numPages) {
-        const pdfjsPage2 = await _pdfDoc2.getPage(i + 1)
-        const vp2 = pdfjsPage2.getViewport({ scale: EXPORT_SCALE })
+      if (i < exportDoc2.numPages) {
+        const page2 = await exportDoc2.getPage(i + 1)
+        const vp2   = page2.getViewport({ scale: EXPORT_SCALE })
         w2 = vp2.width; h2 = vp2.height
 
-        const offCanvas2 = document.createElement('canvas')
-        offCanvas2.width = Math.round(w2); offCanvas2.height = Math.round(h2)
-        const ctx2 = offCanvas2.getContext('2d')
-        await pdfjsPage2.render({ canvasContext: ctx2, viewport: vp2 }).promise
+        const c2 = document.createElement('canvas')
+        c2.width  = Math.max(1, Math.round(w2))
+        c2.height = Math.max(1, Math.round(h2))
+        const ctx2 = c2.getContext('2d')
+        await page2.render({ canvasContext: ctx2, viewport: vp2 }).promise
 
         const { wordStates2 } = getPageHighlights(i + 1)
-        await drawHighlights(ctx2, pdfjsPage2, vp2, wordStates2, '#22c55e')
+        if (wordStates2?.length) {
+          const viewerPage2 = await _pdfDoc2.getPage(i + 1)
+          await drawHighlights(ctx2, viewerPage2, vp2, wordStates2, '#22c55e')
+        }
 
-        const blob2 = await new Promise(res => offCanvas2.toBlob(res, 'image/png'))
+        const blob2     = await new Promise(res => c2.toBlob(res, 'image/png'))
         const imgBytes2 = await blob2.arrayBuffer()
         embedded2 = await finalMergedPdf.embedPng(imgBytes2)
       }
@@ -777,7 +807,6 @@ async function generateCombinedPdf() {
       const mergedHeight = Math.max(h1, h2) || 842
 
       const blankPage = finalMergedPdf.addPage([mergedWidth, mergedHeight])
-
       if (embedded1) blankPage.drawImage(embedded1, { x: 0,  y: mergedHeight - h1, width: w1, height: h1 })
       if (embedded2) blankPage.drawImage(embedded2, { x: w1, y: mergedHeight - h2, width: w2, height: h2 })
 
@@ -792,8 +821,6 @@ async function generateCombinedPdf() {
     }
 
     const pdfBytes = await finalMergedPdf.save()
-
-    // Store blob — do NOT trigger download here, Chrome blocks it after async work
     readyPdfBlob.value = new Blob([pdfBytes], { type: 'application/pdf' })
     message.success({ content: '¡PDF combinado listo! Haz clic en "Ver PDF" para abrirlo.', duration: 4 })
 
@@ -803,6 +830,9 @@ async function generateCombinedPdf() {
     message.error({ content: `Error al generar el PDF: ${e.message}`, duration: 7 })
   } finally {
     exporting.value = false
+    // Cleanup fresh export documents to free memory
+    exportDoc1?.cleanup?.()
+    exportDoc2?.cleanup?.()
   }
 }
 
