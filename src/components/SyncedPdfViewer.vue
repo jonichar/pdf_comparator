@@ -767,10 +767,8 @@ async function generateCombinedPdf() {
 
         // Apply same highlights as the viewer (wordStates from cached diff)
         const { wordStates1 } = getPageHighlights(i + 1)
-        // Use the viewer's _pdfDoc1 only for text content (read-only, safe)
         if (wordStates1?.length) {
-          const viewerPage1 = await _pdfDoc1.getPage(i + 1)
-          await drawHighlights(ctx1, viewerPage1, vp1, wordStates1, '#ef4444')
+          await drawHighlights(ctx1, page1, vp1, wordStates1, '#ef4444')
         }
 
         const blob1     = await new Promise(res => c1.toBlob(res, 'image/png'))
@@ -793,8 +791,7 @@ async function generateCombinedPdf() {
 
         const { wordStates2 } = getPageHighlights(i + 1)
         if (wordStates2?.length) {
-          const viewerPage2 = await _pdfDoc2.getPage(i + 1)
-          await drawHighlights(ctx2, viewerPage2, vp2, wordStates2, '#22c55e')
+          await drawHighlights(ctx2, page2, vp2, wordStates2, '#22c55e')
         }
 
         const blob2     = await new Promise(res => c2.toBlob(res, 'image/png'))
