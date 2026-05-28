@@ -755,48 +755,64 @@ async function generateCombinedPdf() {
       // ── Render doc1 page ──────────────────────────────────────────
       let embedded1 = null, w1 = 0, h1 = 0
       if (i < exportDoc1.numPages) {
-        const page1 = await exportDoc1.getPage(i + 1)
-        const vp1   = page1.getViewport({ scale: EXPORT_SCALE })
-        w1 = vp1.width; h1 = vp1.height
-
-        const c1 = document.createElement('canvas')
-        c1.width  = Math.max(1, Math.round(w1))
-        c1.height = Math.max(1, Math.round(h1))
-        const ctx1 = c1.getContext('2d')
-        await page1.render({ canvasContext: ctx1, viewport: vp1 }).promise
-
-        // Apply same highlights as the viewer (wordStates from cached diff)
-        const { wordStates1 } = getPageHighlights(i + 1)
-        if (wordStates1?.length) {
-          await drawHighlights(ctx1, page1, vp1, wordStates1, '#ef4444')
+        let page1 = null
+        try {
+          page1 = await exportDoc1.getPage(i + 1)
+        } catch (e) {
+          console.warn(`[Export] Skipping doc1 page ${i + 1}:`, e.message)
         }
+        
+        if (page1) {
+          const vp1   = page1.getViewport({ scale: EXPORT_SCALE })
+          w1 = vp1.width; h1 = vp1.height
 
-        const blob1     = await new Promise(res => c1.toBlob(res, 'image/png'))
-        const imgBytes1 = await blob1.arrayBuffer()
-        embedded1 = await finalMergedPdf.embedPng(imgBytes1)
+          const c1 = document.createElement('canvas')
+          c1.width  = Math.max(1, Math.round(w1))
+          c1.height = Math.max(1, Math.round(h1))
+          const ctx1 = c1.getContext('2d')
+          await page1.render({ canvasContext: ctx1, viewport: vp1 }).promise
+
+          // Apply same highlights as the viewer (wordStates from cached diff)
+          const { wordStates1 } = getPageHighlights(i + 1)
+          if (wordStates1?.length) {
+            await drawHighlights(ctx1, page1, vp1, wordStates1, '#ef4444')
+          }
+
+          const blob1     = await new Promise(res => c1.toBlob(res, 'image/png'))
+          const imgBytes1 = await blob1.arrayBuffer()
+          embedded1 = await finalMergedPdf.embedPng(imgBytes1)
+        }
       }
 
       // ── Render doc2 page ──────────────────────────────────────────
       let embedded2 = null, w2 = 0, h2 = 0
       if (i < exportDoc2.numPages) {
-        const page2 = await exportDoc2.getPage(i + 1)
-        const vp2   = page2.getViewport({ scale: EXPORT_SCALE })
-        w2 = vp2.width; h2 = vp2.height
-
-        const c2 = document.createElement('canvas')
-        c2.width  = Math.max(1, Math.round(w2))
-        c2.height = Math.max(1, Math.round(h2))
-        const ctx2 = c2.getContext('2d')
-        await page2.render({ canvasContext: ctx2, viewport: vp2 }).promise
-
-        const { wordStates2 } = getPageHighlights(i + 1)
-        if (wordStates2?.length) {
-          await drawHighlights(ctx2, page2, vp2, wordStates2, '#22c55e')
+        let page2 = null
+        try {
+          page2 = await exportDoc2.getPage(i + 1)
+        } catch (e) {
+          console.warn(`[Export] Skipping doc2 page ${i + 1}:`, e.message)
         }
 
-        const blob2     = await new Promise(res => c2.toBlob(res, 'image/png'))
-        const imgBytes2 = await blob2.arrayBuffer()
-        embedded2 = await finalMergedPdf.embedPng(imgBytes2)
+        if (page2) {
+          const vp2   = page2.getViewport({ scale: EXPORT_SCALE })
+          w2 = vp2.width; h2 = vp2.height
+
+          const c2 = document.createElement('canvas')
+          c2.width  = Math.max(1, Math.round(w2))
+          c2.height = Math.max(1, Math.round(h2))
+          const ctx2 = c2.getContext('2d')
+          await page2.render({ canvasContext: ctx2, viewport: vp2 }).promise
+
+          const { wordStates2 } = getPageHighlights(i + 1)
+          if (wordStates2?.length) {
+            await drawHighlights(ctx2, page2, vp2, wordStates2, '#22c55e')
+          }
+
+          const blob2     = await new Promise(res => c2.toBlob(res, 'image/png'))
+          const imgBytes2 = await blob2.arrayBuffer()
+          embedded2 = await finalMergedPdf.embedPng(imgBytes2)
+        }
       }
 
       // ── Compose side-by-side page ─────────────────────────────────
