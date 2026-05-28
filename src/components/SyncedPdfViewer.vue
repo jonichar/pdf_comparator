@@ -816,21 +816,23 @@ async function generateCombinedPdf() {
       }
 
       // ── Compose side-by-side page ─────────────────────────────────
-      const mergedWidth  = w1 + w2
+      // Ensure we keep the dual-page layout even if one side is missing
+      const finalW1 = w1 || w2 || 595
+      const finalW2 = w2 || w1 || 595
+      const mergedWidth  = finalW1 + finalW2
       const mergedHeight = Math.max(h1, h2) || 842
 
       const blankPage = finalMergedPdf.addPage([mergedWidth, mergedHeight])
-      if (embedded1) blankPage.drawImage(embedded1, { x: 0,  y: mergedHeight - h1, width: w1, height: h1 })
-      if (embedded2) blankPage.drawImage(embedded2, { x: w1, y: mergedHeight - h2, width: w2, height: h2 })
+      if (embedded1) blankPage.drawImage(embedded1, { x: 0,       y: mergedHeight - h1, width: w1, height: h1 })
+      if (embedded2) blankPage.drawImage(embedded2, { x: finalW1, y: mergedHeight - h2, width: w2, height: h2 })
 
-      if (w1 > 0 && w2 > 0) {
-        blankPage.drawLine({
-          start: { x: w1, y: 0 },
-          end:   { x: w1, y: mergedHeight },
-          thickness: 1.5,
-          color: rgb(0.6, 0.6, 0.6)
-        })
-      }
+      // Draw the central separator line
+      blankPage.drawLine({
+        start: { x: finalW1, y: 0 },
+        end:   { x: finalW1, y: mergedHeight },
+        thickness: 1.5,
+        color: rgb(0.6, 0.6, 0.6)
+      })
     }
 
     const pdfBytes = await finalMergedPdf.save()
