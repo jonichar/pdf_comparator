@@ -609,7 +609,7 @@ async function loadPdf(file, side) {
 
   try {
     const ab     = await file.arrayBuffer()
-    const pdfDoc = await pdfjsLib.getDocument({ data: ab }).promise
+    const pdfDoc = await pdfjsLib.getDocument({ data: ab, docId: `viewer-${side}-${Date.now()}` }).promise
     const count  = pdfDoc.numPages
 
     if (L) { _pdfDoc1 = pdfDoc; pageCount1.value = count }
@@ -811,9 +811,9 @@ async function generateCombinedPdf() {
   exportError.value = false
 
   // Load fresh independent pdf.js instances for export.
-  // Reusing _pdfDoc1/_pdfDoc2 causes "Invalid page request" because those
-  // documents are actively used by the viewer's IntersectionObserver renders —
-  // concurrent render tasks on the same document conflict in pdf.js worker.
+  // CRITICAL: Use unique docId to prevent pdf.js from caching documents by
+  // fingerprint. Two versions of the same PDF share the same fingerprint but
+  // may have different page counts, causing "Invalid page request" errors.
   let exportDoc1 = null, exportDoc2 = null
   try {
     const [ab1, ab2] = await Promise.all([
@@ -821,8 +821,8 @@ async function generateCombinedPdf() {
       props.file2.arrayBuffer()
     ])
     ;[exportDoc1, exportDoc2] = await Promise.all([
-      pdfjsLib.getDocument({ data: ab1 }).promise,
-      pdfjsLib.getDocument({ data: ab2 }).promise
+      pdfjsLib.getDocument({ data: ab1, docId: 'export-doc1-' + Date.now() }).promise,
+      pdfjsLib.getDocument({ data: ab2, docId: 'export-doc2-' + Date.now() }).promise
     ])
   } catch(e) {
     exporting.value = false
