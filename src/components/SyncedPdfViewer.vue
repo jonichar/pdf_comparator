@@ -104,14 +104,20 @@
             <span>Carga el PDF original</span>
           </div>
 
-          <!-- Pages: wrapper is full-width so canvas centering works inside it -->
-          <div v-for="p in pages1" :key="p.num" class="pdf-page-wrapper">
-            <div class="pdf-page-label">PÁGINA {{ p.num }}</div>
-            <div v-if="highlightedPages1.includes(p.num)" class="pdf-change-badge pdf-change-badge--red">✏️ Cambios</div>
-            <canvas
-              :data-pageid="`left-${p.num}`"
-              class="pdf-canvas"
-            ></canvas>
+          <!-- Pages: aligned pairs ensure both sides stay in sync -->
+          <div v-for="(pair, idx) in alignedPages" :key="'L'+idx" class="pdf-page-wrapper">
+            <template v-if="pair[0] !== null">
+              <div class="pdf-page-label">PÁGINA {{ pair[0] }}</div>
+              <div v-if="highlightedPages1.includes(pair[0])" class="pdf-change-badge pdf-change-badge--red">✏️ Cambios</div>
+              <canvas
+                :data-pageid="`left-${pair[0]}`"
+                class="pdf-canvas"
+              ></canvas>
+            </template>
+            <template v-else>
+              <div class="pdf-page-label pdf-page-label--blank">SIN PÁGINA</div>
+              <div class="pdf-blank-placeholder"></div>
+            </template>
           </div>
 
           <div v-if="loading1" class="pdf-loading">
@@ -146,13 +152,19 @@
             <span>Carga el PDF modificado</span>
           </div>
 
-          <div v-for="p in pages2" :key="p.num" class="pdf-page-wrapper">
-            <div class="pdf-page-label">PÁGINA {{ p.num }}</div>
-            <div v-if="highlightedPages2.includes(p.num)" class="pdf-change-badge pdf-change-badge--green">✏️ Cambios</div>
-            <canvas
-              :data-pageid="`right-${p.num}`"
-              class="pdf-canvas"
-            ></canvas>
+          <div v-for="(pair, idx) in alignedPages" :key="'R'+idx" class="pdf-page-wrapper">
+            <template v-if="pair[1] !== null">
+              <div class="pdf-page-label">PÁGINA {{ pair[1] }}</div>
+              <div v-if="highlightedPages2.includes(pair[1])" class="pdf-change-badge pdf-change-badge--green">✏️ Cambios</div>
+              <canvas
+                :data-pageid="`right-${pair[1]}`"
+                class="pdf-canvas"
+              ></canvas>
+            </template>
+            <template v-else>
+              <div class="pdf-page-label pdf-page-label--blank">SIN PÁGINA</div>
+              <div class="pdf-blank-placeholder"></div>
+            </template>
           </div>
 
           <div v-if="loading2" class="pdf-loading">
@@ -173,6 +185,7 @@ import * as pdfjsLib from 'pdfjs-dist'
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import DiffMatchPatch from 'diff-match-patch'
 import { PDFDocument, rgb } from 'pdf-lib'
+import { computePageAlignment } from '../utils/pageAlignment.js'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
 
@@ -240,6 +253,16 @@ watch(zoomLevel, (val) => {
       c.style.height = (bh * val) + 'px'
     }
   }
+  // Also resize blank placeholders
+  const blanks = document.querySelectorAll('.pdf-blank-placeholder')
+  for (const b of blanks) {
+    const bw = parseFloat(b.dataset.basewidth || '0')
+    const bh = parseFloat(b.dataset.baseheight || '0')
+    if (bw && bh) {
+      b.style.width  = (bw * val) + 'px'
+      b.style.height = (bh * val) + 'px'
+    }
+  }
 })
 
 // ── Containers ────────────────────────────────────────────────────
@@ -301,23 +324,26 @@ function tokenize(text) {
 // ── Highlights ────────────────────────────────────────────────────
 /**
  * Extracts exact phrases that were deleted or inserted on the page.
- * By keeping the words in sequences (phrases), we avoid highlighting
- * isolated common tokens just because they appear elsewhere.
+ * Uses the alignment mapping to compare the correct pages from each document.
+ * 
+ * @param {number|null} pageNum1 - 1-indexed page from doc1 (or null if blank)
+ * @param {number|null} pageNum2 - 1-indexed page from doc2 (or null if blank)
  */
-const _pageCache = new Map() // num -> { deletedPhrases: string[], insertedPhrases: string[] }
+const _pageCache = new Map() // "p1-p2" -> { wordStates1, wordStates2 }
 
-function getPageHighlights(num) {
-  if (_pageCache.has(num)) return _pageCache.get(num)
+function getPageHighlights(pageNum1, pageNum2) {
+  const key = `${pageNum1 ?? 'X'}-${pageNum2 ?? 'X'}`
+  if (_pageCache.has(key)) return _pageCache.get(key)
 
-  const text1 = props.pageTexts1[num - 1] || ''
-  const text2 = props.pageTexts2[num - 1] || ''
+  const text1 = pageNum1 ? (props.pageTexts1[pageNum1 - 1] || '') : ''
+  const text2 = pageNum2 ? (props.pageTexts2[pageNum2 - 1] || '') : ''
 
   const wordStates1 = []
   const wordStates2 = []
 
   if (!text1 && !text2) {
     const res = { wordStates1, wordStates2 }
-    _pageCache.set(num, res)
+    _pageCache.set(key, res)
     return res
   }
 
@@ -366,7 +392,7 @@ function getPageHighlights(num) {
   }
 
   const res = { wordStates1, wordStates2 }
-  _pageCache.set(num, res)
+  _pageCache.set(key, res)
   return res
 }
 
@@ -524,7 +550,11 @@ async function renderPageContext(canvas, pdfDoc, num, side, baseScale) {
   await page.render({ canvasContext: ctx, viewport }).promise
 
   // Retrieve page-specific sequential boolean string masks
-  const { wordStates1, wordStates2 } = getPageHighlights(num)
+  // Look up the aligned pair for this page to get correct cross-doc comparison
+  const pair = alignedPages.value.find(p => side === 'left' ? p[0] === num : p[1] === num)
+  const alignedNum1 = pair ? pair[0] : num
+  const alignedNum2 = pair ? pair[1] : num
+  const { wordStates1, wordStates2 } = getPageHighlights(alignedNum1, alignedNum2)
 
   // Use precisely perfectly mapped boolean masks
   if (side === 'left')  await drawHighlights(ctx, page, viewport, wordStates1, '#ef4444')
@@ -536,6 +566,7 @@ const pageCount1       = ref(0)
 const pageCount2       = ref(0)
 const pages1           = ref([])
 const pages2           = ref([])
+const alignedPages     = ref([])  // Array of [doc1PageNum|null, doc2PageNum|null] pairs
 const loading1         = ref(false)
 const loading2         = ref(false)
 const highlightedPages1 = ref([])
@@ -545,6 +576,7 @@ const exportError       = ref(false)  // True when PDF generation failed
 const readyPdfBlob      = ref(null)  // Stores the ready blob until user clicks "Save"
 let _pdfDoc1 = null, _baseScale1 = 1
 let _pdfDoc2 = null, _baseScale2 = 1
+let _bothLoaded = false  // True once both PDFs loaded → triggers alignment
 // Cached unique-word Sets — recomputed when highlights props change
 let _uniqueDeleted  = new Set()
 let _uniqueInserted = new Set()
@@ -583,7 +615,7 @@ async function loadPdf(file, side) {
     if (L) { _pdfDoc1 = pdfDoc; pageCount1.value = count }
     else   { _pdfDoc2 = pdfDoc; pageCount2.value = count }
 
-    // Populate page list → triggers DOM creation of canvas elements
+    // Populate page list (still used internally for scale computation)
     const pageList = Array.from({ length: count }, (_, i) => ({ num: i + 1 }))
     if (L) pages1.value = pageList
     else   pages2.value = pageList
@@ -593,6 +625,22 @@ async function loadPdf(file, side) {
     // Reset previously generated PDF when docs change
     readyPdfBlob.value = null
     exportError.value = false
+
+    // ── Compute alignment when both docs are available ──────────
+    _bothLoaded = !!(_pdfDoc1 && _pdfDoc2)
+
+    if (_bothLoaded && props.pageTexts1.length && props.pageTexts2.length) {
+      const alignment = computePageAlignment(props.pageTexts1, props.pageTexts2)
+      alignedPages.value = alignment
+      console.log('[Alignment] Computed:', JSON.stringify(alignment))
+    } else {
+      // Fallback: simple 1:1 while only one doc is loaded
+      const maxCount = Math.max(pageCount1.value, pageCount2.value)
+      alignedPages.value = Array.from({ length: maxCount }, (_, i) => [
+        i < pageCount1.value ? i + 1 : null,
+        i < pageCount2.value ? i + 1 : null
+      ])
+    }
 
     // Wait for Vue to create all canvas elements
     await nextTick()
@@ -606,12 +654,15 @@ async function loadPdf(file, side) {
     if (L) _baseScale1 = baseScale
     else   _baseScale2 = baseScale
 
-    // 1. Setup layout shells synchronously fast so scrollbars measure perfectly
+    // 1. Setup layout shells for only the real pages of this side
     for (let i = 1; i <= count; i++) {
       await setupPageDimensions(pdfDoc, i, side, baseScale)
     }
 
-    // 2. Delegate rendering strictly to the Viewport Observer
+    // 2. Size blank placeholders to match the opposite side's dimensions
+    await sizePlaceholders(side)
+
+    // 3. Delegate rendering strictly to the Viewport Observer
     setupObserverForSide(side)
 
     if (L) highlightedPages1.value = [...props.changedPages1]
@@ -622,6 +673,45 @@ async function loadPdf(file, side) {
   } finally {
     if (L) loading1.value = false
     else   loading2.value = false
+  }
+}
+
+/**
+ * Size blank placeholder divs to match the dimensions of the opposite side's
+ * corresponding page so both sides stay row-aligned.
+ */
+async function sizePlaceholders(loadedSide) {
+  const container = loadedSide === 'left' ? leftContainer.value : rightContainer.value
+  const otherContainer = loadedSide === 'left' ? rightContainer.value : leftContainer.value
+  if (!container || !otherContainer) return
+
+  // For each aligned pair, if the OTHER side has a blank, size it to match this side
+  for (const pair of alignedPages.value) {
+    const thisPageNum  = loadedSide === 'left' ? pair[0] : pair[1]
+    const otherPageNum = loadedSide === 'left' ? pair[1] : pair[0]
+
+    if (thisPageNum !== null && otherPageNum === null) {
+      // This side has a page, other side is blank → size the blank
+      const canvas = getCanvas(loadedSide, thisPageNum)
+      if (!canvas) continue
+
+      const w = parseFloat(canvas.dataset.basewidth || '0')
+      const h = parseFloat(canvas.dataset.baseheight || '0')
+      if (!w || !h) continue
+
+      // Find the blank placeholder in the other container at the same row index
+      const idx = alignedPages.value.indexOf(pair)
+      const otherWrappers = otherContainer.querySelectorAll('.pdf-page-wrapper')
+      if (idx < otherWrappers.length) {
+        const placeholder = otherWrappers[idx].querySelector('.pdf-blank-placeholder')
+        if (placeholder) {
+          placeholder.dataset.basewidth = w
+          placeholder.dataset.baseheight = h
+          placeholder.style.width = (w * zoomLevel.value) + 'px'
+          placeholder.style.height = (h * zoomLevel.value) + 'px'
+        }
+      }
+    }
   }
 }
 
@@ -636,7 +726,7 @@ async function applyHighlightsToLibDoc(libDoc, pdfjsDoc, side) {
 
   for (let i = 0; i < count; i++) {
     const pageNum = i + 1
-    const { wordStates1, wordStates2 } = await getPageHighlights(pageNum)
+    const { wordStates1, wordStates2 } = await getPageHighlights(pageNum, pageNum)
     const wordStates = isLeft ? wordStates1 : wordStates2
 
     if (!wordStates || !wordStates.length || !wordStates.some(v => v)) continue
@@ -748,18 +838,22 @@ async function generateCombinedPdf() {
     //   1) "Unknown compression method in flate stream" (pdf-lib embedPage bug)
     //   2) "Invalid page request" (concurrent render on shared pdf.js document)
     const EXPORT_SCALE = 1.5
-    const count = Math.max(exportDoc1.numPages, exportDoc2.numPages)
     const finalMergedPdf = await PDFDocument.create()
 
-    for (let i = 0; i < count; i++) {
+    // Use the same alignment as the viewer
+    const pairs = alignedPages.value
+
+    for (let idx = 0; idx < pairs.length; idx++) {
+      const [pageNum1, pageNum2] = pairs[idx]
+
       // ── Render doc1 page ──────────────────────────────────────────
       let embedded1 = null, w1 = 0, h1 = 0
-      if (i < exportDoc1.numPages) {
+      if (pageNum1 !== null) {
         let page1 = null
         try {
-          page1 = await exportDoc1.getPage(i + 1)
+          page1 = await exportDoc1.getPage(pageNum1)
         } catch (e) {
-          console.warn(`[Export] Skipping doc1 page ${i + 1}:`, e.message)
+          console.warn(`[Export] Skipping doc1 page ${pageNum1}:`, e.message)
         }
         
         if (page1) {
@@ -773,7 +867,7 @@ async function generateCombinedPdf() {
           await page1.render({ canvasContext: ctx1, viewport: vp1 }).promise
 
           // Apply same highlights as the viewer (wordStates from cached diff)
-          const { wordStates1 } = getPageHighlights(i + 1)
+          const { wordStates1 } = getPageHighlights(pageNum1, pageNum2)
           if (wordStates1?.length) {
             await drawHighlights(ctx1, page1, vp1, wordStates1, '#ef4444')
           }
@@ -786,12 +880,12 @@ async function generateCombinedPdf() {
 
       // ── Render doc2 page ──────────────────────────────────────────
       let embedded2 = null, w2 = 0, h2 = 0
-      if (i < exportDoc2.numPages) {
+      if (pageNum2 !== null) {
         let page2 = null
         try {
-          page2 = await exportDoc2.getPage(i + 1)
+          page2 = await exportDoc2.getPage(pageNum2)
         } catch (e) {
-          console.warn(`[Export] Skipping doc2 page ${i + 1}:`, e.message)
+          console.warn(`[Export] Skipping doc2 page ${pageNum2}:`, e.message)
         }
 
         if (page2) {
@@ -804,7 +898,7 @@ async function generateCombinedPdf() {
           const ctx2 = c2.getContext('2d')
           await page2.render({ canvasContext: ctx2, viewport: vp2 }).promise
 
-          const { wordStates2 } = getPageHighlights(i + 1)
+          const { wordStates2 } = getPageHighlights(pageNum1, pageNum2)
           if (wordStates2?.length) {
             await drawHighlights(ctx2, page2, vp2, wordStates2, '#22c55e')
           }
@@ -816,7 +910,7 @@ async function generateCombinedPdf() {
       }
 
       // ── Compose side-by-side page ─────────────────────────────────
-      // Ensure we keep the dual-page layout even if one side is missing
+      // Ensure we keep the dual-page layout even if one side is blank
       const finalW1 = w1 || w2 || 595
       const finalW2 = w2 || w1 || 595
       const mergedWidth  = finalW1 + finalW2
@@ -867,8 +961,23 @@ async function rerenderAll() {
 }
 
 // Re-render only when underlying texts violently change
-watch([() => props.pageTexts1, () => props.pageTexts2], () => {
+watch([() => props.pageTexts1, () => props.pageTexts2], async () => {
   _pageCache.clear()
+
+  // Recompute alignment when page texts become available (after comparison runs)
+  if (_pdfDoc1 && _pdfDoc2 && props.pageTexts1.length && props.pageTexts2.length) {
+    const alignment = computePageAlignment(props.pageTexts1, props.pageTexts2)
+    alignedPages.value = alignment
+    console.log('[Alignment] Recomputed on text change:', JSON.stringify(alignment))
+
+    // Wait for Vue to create blank placeholder DOM elements
+    await nextTick()
+    await nextTick()
+
+    // Resize placeholders for both sides
+    await sizePlaceholders('left')
+    await sizePlaceholders('right')
+  }
 }, { deep: true })
 
 watch(() => props.file1, f => { if (f) loadPdf(f, 'left')  }, { immediate: true })
@@ -955,5 +1064,34 @@ watch(() => props.file2, f => { if (f) loadPdf(f, 'right') }, { immediate: true 
   gap: 10px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.pdf-blank-placeholder {
+  display: block;
+  border-radius: 3px;
+  border: 2px dashed rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.03);
+  transform-origin: center top;
+  will-change: width, height;
+  min-height: 200px;
+  position: relative;
+}
+.pdf-blank-placeholder::after {
+  content: 'Página no presente en este documento';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 12px;
+  color: rgba(255,255,255,0.18);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.pdf-page-label--blank {
+  color: rgba(251,191,36,0.6);
+  font-style: italic;
 }
 </style>
