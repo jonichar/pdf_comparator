@@ -327,8 +327,8 @@ import { usePdfExtractor } from './composables/usePdfExtractor.js'
 import { useTextDiff } from './composables/useTextDiff.js'
 
 // ── PDF extractors ────────────────────────────────────────────────
-const extractor1 = usePdfExtractor()
-const extractor2 = usePdfExtractor()
+const extractor1 = usePdfExtractor('left')
+const extractor2 = usePdfExtractor('right')
 
 // Expose reactive props from extractors for template
 const pdf1Loading = extractor1.isLoading
@@ -441,14 +441,13 @@ async function runComparison() {
   }
 }
 
-// ── Initial Test Preload (Disabled for production) ──────────────────
-/*
+// ── Initial Test Preload (ENABLED for debug) ──────────────────
 onMounted(async () => {
   try {
     message.loading({ content: 'Precargando PDFs de prueba...', key: 'preload' })
 
-    const v09Url = '/test-pdfs/doc1.pdf'
-    const v10Url = '/test-pdfs/doc2.pdf'
+    const v09Url = '/test-pdfs/original.pdf'
+    const v10Url = '/test-pdfs/modificado.pdf'
 
     const [res1, res2] = await Promise.all([ fetch(v09Url), fetch(v10Url) ])
 
@@ -457,10 +456,12 @@ onMounted(async () => {
     const blob1 = await res1.blob()
     const blob2 = await res2.blob()
 
-    const file1 = new File([blob1], 'VALSARTAN_doc1.pdf', { type: 'application/pdf' })
-    const file2 = new File([blob2], 'VALSARTAN_doc2.pdf', { type: 'application/pdf' })
+    const file1 = new File([blob1], 'CLORMADINONA_original.pdf', { type: 'application/pdf' })
+    const file2 = new File([blob2], 'CLORMADINONA_modificado.pdf', { type: 'application/pdf' })
 
-    await Promise.all([ onPdf1Selected(file1), onPdf2Selected(file2) ])
+    // Load sequentially to avoid pdf.js fingerprint cache collisions!
+    await onPdf1Selected(file1)
+    await onPdf2Selected(file2)
 
     message.success({ content: 'PDFs precargados exitosamente', key: 'preload', duration: 2 })
 
@@ -472,7 +473,6 @@ onMounted(async () => {
     message.error({ content: 'Fallo al precargar los PDFs: ' + e.message, key: 'preload' })
   }
 })
-*/
 
 
 // ── Step navigation ────────────────────────────────────────────────

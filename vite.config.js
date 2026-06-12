@@ -8,9 +8,19 @@ export default defineConfig({
   plugins: [
     vue(),
     tailwindcss(),
-    // viteStaticCopy disabled for production
+    {
+      name: 'patch-pdfjs-mapper-bug',
+      enforce: 'pre',
+      transform(code, id) {
+        if (id.includes('pdfjs-dist') && id.endsWith('.mjs')) {
+          // pdfjs-dist uses a singleton pagesMapper which crashes when loading multiple documents sequentially.
+          // By replacing the check with 'false', we bypass the artificial restriction.
+          return code.replace('pageNumber > this.#pagesMapper.pagesNumber', 'false');
+        }
+      }
+    }
   ],
   optimizeDeps: {
-    include: ['pdfjs-dist']
+    exclude: ['pdfjs-dist']
   }
 })

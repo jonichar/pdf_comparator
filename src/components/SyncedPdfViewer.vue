@@ -105,7 +105,7 @@
           </div>
 
           <!-- Pages: aligned pairs ensure both sides stay in sync -->
-          <div v-for="(pair, idx) in alignedPages" :key="'L'+idx" class="pdf-page-wrapper">
+          <div v-for="(pair, idx) in alignedPages" :key="`L-${idx}-${pair[0] || 'blank'}`" class="pdf-page-wrapper">
             <template v-if="pair[0] !== null">
               <div class="pdf-page-label">PÁGINA {{ pair[0] }}</div>
               <div v-if="highlightedPages1.includes(pair[0])" class="pdf-change-badge pdf-change-badge--red">✏️ Cambios</div>
@@ -152,7 +152,7 @@
             <span>Carga el PDF modificado</span>
           </div>
 
-          <div v-for="(pair, idx) in alignedPages" :key="'R'+idx" class="pdf-page-wrapper">
+          <div v-for="(pair, idx) in alignedPages" :key="`R-${idx}-${pair[1] || 'blank'}`" class="pdf-page-wrapper">
             <template v-if="pair[1] !== null">
               <div class="pdf-page-label">PÁGINA {{ pair[1] }}</div>
               <div v-if="highlightedPages2.includes(pair[1])" class="pdf-change-badge pdf-change-badge--green">✏️ Cambios</div>
@@ -181,7 +181,7 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
-import * as pdfjsLib from 'pdfjs-dist'
+import * as pdfjsLibOriginal from 'pdfjs-dist'
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import DiffMatchPatch from 'diff-match-patch'
 import { PDFDocument, rgb } from 'pdf-lib'
@@ -547,7 +547,18 @@ async function renderPageContext(canvas, pdfDoc, num, side, baseScale) {
   canvas.height = viewport.height
 
   const ctx = canvas.getContext('2d')
-  await page.render({ canvasContext: ctx, viewport }).promise
+  try {
+    await page.render({ canvasContext: ctx, viewport }).promise
+    console.log(`[Viewer] Rendered page ${num} on ${side} side successfully.`)
+  } catch (err) {
+    console.error(`[Viewer] Failed to render page ${num} on ${side} side:`, err)
+    // Draw a big red X on the canvas so it's obvious there was a render failure
+    ctx.fillStyle = '#fee2e2'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.fillStyle = '#dc2626'
+    ctx.font = '40px sans-serif'
+    ctx.fillText(`Error rendering page ${num}`, 50, 50)
+  }
 
   // Retrieve page-specific sequential boolean string masks
   // Look up the aligned pair for this page to get correct cross-doc comparison
@@ -605,11 +616,35 @@ async function loadPdf(file, side) {
   const L = side === 'left'
 
   if (L) { loading1.value = true; pages1.value = []; highlightedPages1.value = [] }
-  else   { loading2.value = true; pages2.value = []; highlightedPages2.value = [] }
+  // CRITICAL: Dynamically import a separate instance of pdfjs-dist for the right side!
+  // This physically bypasses the singleton `PagesMapper` and internal worker fingerprint caches 
+  // that crash pdf.js when two documents with the same fingerprint (but different page counts) are loaded.
+  let pdfjsLib
+  if (side === 'left') {
+    pdfjsLib = await import('pdfjs-dist')
+  } else {
+    pdfjsLib = await import('pdfjs-dist?side=right')
+  }
+
+  // Assign workerSrc dynamically for the instance
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
+
+  if (L) loading1.value = true
+  else   loading2.value = true
 
   try {
-    const ab     = await file.arrayBuffer()
-    const pdfDoc = await pdfjsLib.getDocument({ data: ab, docId: `viewer-${side}-${Date.now()}` }).promise
+    const ab = await file.arrayBuffer()
+    // Worker isolation: completely unique worker per side
+    const worker = new pdfjsLib.PDFWorker({ name: `worker-${side}-${Date.now()}` })
+    const pdfDoc = await pdfjsLib.getDocument({ data: ab, worker }).promise
+    
+    // Overwrite destroy method to ensure the isolated worker is also terminated
+    const originalDestroy = pdfDoc.destroy.bind(pdfDoc)
+    pdfDoc.destroy = async () => {
+      await originalDestroy()
+      worker.destroy()
+    }
+    
     const count  = pdfDoc.numPages
 
     if (L) { _pdfDoc1 = pdfDoc; pageCount1.value = count }
@@ -820,9 +855,18 @@ async function generateCombinedPdf() {
       props.file1.arrayBuffer(),
       props.file2.arrayBuffer()
     ])
+    
+    const pdfjsLibLeft = await import('pdfjs-dist?export=left')
+    const pdfjsLibRight = await import('pdfjs-dist?export=right')
+    pdfjsLibLeft.GlobalWorkerOptions.workerSrc = pdfjsWorker
+    pdfjsLibRight.GlobalWorkerOptions.workerSrc = pdfjsWorker
+    
+    const w1 = new pdfjsLibLeft.PDFWorker({ name: 'export-w1' })
+    const w2 = new pdfjsLibRight.PDFWorker({ name: 'export-w2' })
+    
     ;[exportDoc1, exportDoc2] = await Promise.all([
-      pdfjsLib.getDocument({ data: ab1, docId: 'export-doc1-' + Date.now() }).promise,
-      pdfjsLib.getDocument({ data: ab2, docId: 'export-doc2-' + Date.now() }).promise
+      pdfjsLibLeft.getDocument({ data: ab1, worker: w1 }).promise,
+      pdfjsLibRight.getDocument({ data: ab2, worker: w2 }).promise
     ])
   } catch(e) {
     exporting.value = false
@@ -970,18 +1014,52 @@ watch([() => props.pageTexts1, () => props.pageTexts2], async () => {
     alignedPages.value = alignment
     console.log('[Alignment] Recomputed on text change:', JSON.stringify(alignment))
 
-    // Wait for Vue to create blank placeholder DOM elements
+    // Wait for Vue to create new canvas/placeholder DOM elements
     await nextTick()
     await nextTick()
+
+    // Setup dimensions for any NEW canvases that Vue just created
+    // (canvases without data-side haven't been initialized yet)
+    const setupSide = async (side) => {
+      const container = side === 'left' ? leftContainer.value : rightContainer.value
+      const pdfDoc = side === 'left' ? _pdfDoc1 : _pdfDoc2
+      const baseScale = side === 'left' ? _baseScale1 : _baseScale2
+      if (!container || !pdfDoc) return
+
+      const canvases = container.querySelectorAll('.pdf-canvas')
+      for (const c of canvases) {
+        if (!c.dataset.side) {
+          // This canvas was just created by Vue — initialize it
+          const pageId = c.dataset.pageid || ''
+          const num = parseInt(pageId.replace(`${side}-`, ''))
+          if (num && num <= pdfDoc.numPages) {
+            await setupPageDimensions(pdfDoc, num, side, baseScale)
+          }
+        }
+      }
+    }
+
+    await setupSide('left')
+    await setupSide('right')
 
     // Resize placeholders for both sides
     await sizePlaceholders('left')
     await sizePlaceholders('right')
+
+    // Re-attach observers so new canvases get rendered when scrolled into view
+    if (_observer) _observer.disconnect()
+    _observer = null
+    setupObserverForSide('left')
+    setupObserverForSide('right')
   }
 }, { deep: true })
 
-watch(() => props.file1, f => { if (f) loadPdf(f, 'left')  }, { immediate: true })
-watch(() => props.file2, f => { if (f) loadPdf(f, 'right') }, { immediate: true })
+watch([() => props.file1, () => props.file2], async () => {
+  const loadPromises = []
+  if (props.file1) loadPromises.push(loadPdf(props.file1, 'left'))
+  if (props.file2) loadPromises.push(loadPdf(props.file2, 'right'))
+  await Promise.all(loadPromises) 
+}, { immediate: true })
 </script>
 
 <style scoped>

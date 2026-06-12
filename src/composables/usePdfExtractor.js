@@ -3,13 +3,9 @@
  * Composable for extracting text from PDF files using PDF.js
  */
 import { ref } from 'vue'
-import * as pdfjsLib from 'pdfjs-dist'
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
-// Point to the local bundled worker (avoids CDN version mismatch errors)
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
-
-export function usePdfExtractor() {
+export function usePdfExtractor(side = 'left') {
     const isLoading = ref(false)
     const progress = ref(0)
     const error = ref(null)
@@ -26,10 +22,31 @@ export function usePdfExtractor() {
 
         try {
             const arrayBuffer = await file.arrayBuffer()
-            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+            const workerName = `extractor-${side}-${Date.now()}-${Math.random()}`
+            console.log(`[Extractor] Starting getDocument with worker: ${workerName}, file: ${file.name}`)
+
+            // Dynamically import isolated instance to bypass global pdf.js caches/singletons
+            let pdfjsLib
+            if (side === 'right') {
+                pdfjsLib = await import('pdfjs-dist?side=right')
+            } else {
+                pdfjsLib = await import('pdfjs-dist')
+            }
+            pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
+
+            const worker = new pdfjsLib.PDFWorker({ name: workerName })
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, worker }).promise
+            console.log(`[Extractor] getDocument complete for ${file.name}, numPages: ${pdf.numPages}`)
             const pageCount = pdf.numPages
             const pages = []
             const skippedPages = []  // 1-indexed page numbers that couldn't be loaded
+            
+            // Override destroy to also destroy the worker
+            const originalDestroy = pdf.destroy.bind(pdf)
+            pdf.destroy = async () => {
+                await originalDestroy()
+                worker.destroy()
+            }
 
             for (let i = 1; i <= pageCount; i++) {
                 let page
@@ -83,6 +100,10 @@ export function usePdfExtractor() {
                 pages.push(pageText)
                 progress.value = Math.round((i / pageCount) * 100)
             }
+
+            // Crucial: Destroy the PDF and Worker to clear pdf.js main-thread cache!
+            // This prevents fingerprint collisions when comparing identical PDFs.
+            await pdf.destroy()
 
             return {
                 pages,
